@@ -26,8 +26,9 @@ def read_archive(data):
         sys.exit("no PyInstaller archive in this executable")
     magic, length, toc_off, toc_len, pyvers, pylib = struct.unpack(COOKIE_FMT, data[pos:pos + COOKIE_LEN])
     end = pos + COOKIE_LEN
-    if end != len(data):
-        sys.exit(f"{len(data) - end} bytes after the archive (still signed? run codesign --remove first)")
+    tail = data[end:]
+    if tail.strip(b"\0"):                                  # (codesign --remove may leave a little zero padding)
+        sys.exit(f"{len(tail)} bytes after the archive (still signed? run codesign --remove first)")
     start = end - length
     toc, cur = [], start + toc_off
     while cur < start + toc_off + toc_len:
