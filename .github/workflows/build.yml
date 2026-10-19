@@ -99,6 +99,15 @@ jobs:
           if pgrep -f "Kingshot Recorder.app/Contents/MacOS/Kingshot Recorder" > /dev/null; then echo "APP RUNNING"; else echo "APP NOT RUNNING"; cat out/app-stdout.txt; exit 1; fi
           cp -R "$HOME/Library/Application Support/Kingshot Recorder" out/appsupport 2>/dev/null || true
           tail -40 out/app-stdout.txt || true
+      - name: Keep the test results on the smoke-results branch (screenshots and logs, readable without a login)
+        if: always()
+        run: |
+          [ -d out ] || exit 0
+          cd out
+          git init -q -b smoke-results
+          git add -A
+          git -c user.name=build -c user.email=build@users.noreply.github.com commit -qm "Smoke test of ${GITHUB_SHA::7}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" smoke-results
       - uses: actions/upload-artifact@v4
         if: always()
         with:
