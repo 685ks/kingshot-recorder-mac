@@ -1,0 +1,142 @@
+# Builds the Mac installer of Kingshot Recorder with the QuickRecorder-based recorder (ksrec) on GitHub's Mac machines:
+# takes the released Mac 0.1.0 program, puts the new program code (payload/payload.zip) and ksrec into it, signs it ad
+# hoc, makes the .pkg installer and a .dmg, installs the .pkg on the machine, starts it and takes screenshots. A push
+# to main also puts the installer on this repository's "mac-quickrecorder" release.
+name: Build Mac installer
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  BASE_PKG: https://github.com/wlfkkkk/Kingshot-Recorder/releases/download/mac-0.1.0/KingshotRecorder-osx-Setup.pkg
+  APP: work/root/Kingshot Recorder.app
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Tools for the executable fix (PyInstaller's Mach-O helper)
+        run: python -m pip install pyinstaller==6.22.3
+      - name: Unpack the released Mac 0.1.0 program
+        run: |
+          sw_vers
+          mkdir -p work/root
+          curl -fsSL -o work/base.pkg "$BASE_PKG"
+          pkgutil --expand-full work/base.pkg work/base
+          ditto "work/base/1.pkg/Payload/Kingshot Recorder.app" "$APP"
+          ls "$APP/Contents/MacOS" "$APP/Contents/Resources"
+      - name: Build ksrec (QuickRecorder-based capture)
+        run: |
+          xcrun swiftc -O -target arm64-apple-macos13.0 -o work/ksrec ksrec/main.swift
+          file work/ksrec
+      - name: Put the new program code into the executable
+        run: |
+          EXE="$APP/Contents/MacOS/Kingshot Recorder"
+          codesign --remove-signature "$EXE"
+          python -I repack.py "$EXE" payload/payload.zip
+          python -c "import sys; from PyInstaller.utils.osx import fix_exe_for_code_signing as f; f(sys.argv[1])" "$EXE"
+      - name: Add ksrec, its license and source, and the permission texts
+        run: |
+          R="$APP/Contents/Resources"
+          cp work/ksrec "$R/ksrec"
+          cp LICENSE "$R/ksrec-LICENSE.txt"
+          cp ksrec/main.swift "$R/ksrec-source.swift"
+          printf '0.1.0-qr' > "$R/mac_version.txt"
+          P="$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string 13.0" "$P"
+          /usr/libexec/PlistBuddy -c "Add :NSScreenCaptureUsageDescription string Kingshot Recorder records the screen or window you pick." "$P"
+          /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string Kingshot Recorder records your microphone when you switch it on." "$P"
+          plutil -lint "$P"
+      - name: Sign ad hoc
+        run: |
+          codesign --force -s - "$APP/Contents/Resources/ksrec"
+          codesign --force --deep -s - "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+      - name: Try ksrec on this machine
+        run: |
+          mkdir -p out
+          K="$APP/Contents/Resources/ksrec"
+          "$K" devices | tee out/ksrec-devices.json || true
+          "$K" list | tee out/ksrec-list.json || true
+          ID=$(python -c "import json,sys; d=json.load(open('out/ksrec-list.json')); print(d['screens'][0]['id'])" 2>/dev/null || echo "")
+          if [ -n "$ID" ]; then
+            (sleep 3; echo q) | "$K" capture --display "$ID" --fps 30 > work/frames.raw 2> out/ksrec-capture.txt || true
+            cat out/ksrec-capture.txt
+            ls -la work/frames.raw
+          fi
+      - name: Make the installer (.pkg) and a disk image (.dmg)
+        run: |
+          pkgbuild --analyze --root work/root work/comp.plist
+          plutil -replace 0.BundleIsRelocatable -bool NO work/comp.plist
+          pkgbuild --root work/root --component-plist work/comp.plist --identifier com.wlfk685.kingshotrecorder \
+            --version 0.1.0 --install-location /Applications --scripts scripts work/comp.pkg
+          mkdir -p dist
+          productbuild --package work/comp.pkg dist/KingshotRecorder-osx-Setup.pkg
+          mkdir -p work/dmg
+          ditto "$APP" "work/dmg/Kingshot Recorder.app"
+          ln -s /Applications work/dmg/Applications
+          hdiutil create -volname "Kingshot Recorder" -srcfolder work/dmg -format UDZO -ov dist/KingshotRecorder-mac.dmg
+          ls -la dist
+      - name: Install it here and start it
+        run: |
+          sudo installer -pkg dist/KingshotRecorder-osx-Setup.pkg -target / 2>&1 | tail -5
+          A="/Applications/Kingshot Recorder.app"
+          codesign --verify --deep --strict "$A" && echo "installed app: signature OK"
+          pkill -f "Kingshot Recorder" || true
+          "$A/Contents/MacOS/Kingshot Recorder" > out/app-stdout.txt 2>&1 &
+          sleep 25
+          screencapture -x out/installed-app.png || true
+          if pgrep -f "Kingshot Recorder.app/Contents/MacOS/Kingshot Recorder" > /dev/null; then echo "APP RUNNING"; else echo "APP NOT RUNNING"; cat out/app-stdout.txt; exit 1; fi
+          cp -R "$HOME/Library/Application Support/Kingshot Recorder" out/appsupport 2>/dev/null || true
+          tail -40 out/app-stdout.txt || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-test
+          path: out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KingshotRecorder-mac
+          path: dist/
+      - name: Publish on the release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view mac-quickrecorder > /dev/null 2>&1 || \
+            gh release create mac-quickrecorder --title "Kingshot Recorder for Mac (QuickRecorder recording)" \
+              --notes "See the README for how to install."
+          gh release upload mac-quickrecorder dist/KingshotRecorder-osx-Setup.pkg dist/KingshotRecorder-mac.dmg --clobber
+
+  released-0-1-0:
+    # the friend's original installer on the same kind of machine, for comparison
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Install and start the released Mac 0.1.0
+        run: |
+          mkdir -p out
+          curl -fsSL -o base.pkg "$BASE_PKG"
+          sudo installer -pkg base.pkg -target / 2>&1 | tail -5
+          A="/Applications/Kingshot Recorder.app"
+          codesign --verify --deep --strict --verbose=2 "$A" 2>&1 || true
+          "$A/Contents/MacOS/Kingshot Recorder" > out/app-stdout.txt 2>&1 &
+          sleep 25
+          screencapture -x out/released-app.png || true
+          pgrep -f "Kingshot Recorder.app/Contents/MacOS/Kingshot Recorder" > /dev/null && echo "APP RUNNING" || echo "APP NOT RUNNING"
+          tail -40 out/app-stdout.txt || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: released-0.1.0-smoke-test
+          path: out/

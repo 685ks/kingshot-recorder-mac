@@ -1,0 +1,5 @@
+#!/bin/sh
+rm -rf /tmp/velopack/KingshotRecorder
+sudo -u "$USER" rm -rf ~/Library/Caches/velopack/KingshotRecorder
+sudo -u "$USER" env VELOPACK_FIRSTRUN=1 open "$2/Kingshot Recorder.app/"
+exit 0
