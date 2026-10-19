@@ -1,0 +1,2 @@
+STARTED
+-rw-r--r--  1 runner  staff  311040 Oct 19 21:19 work/sound.pcm
